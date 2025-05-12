@@ -1,15 +1,6 @@
  ## TreeLUT
-![Alt text](toolflow.jpg)
 
-<div align="justify"> 
- 
-TreeLUT is a Python package for implementing gradient boosted decision trees (GBDTs) in hardware. It provides a tool to convert XGBoost models into Verilog files using an efficient quantization scheme, hardware architecture, and pipelining strategy. 
-
-TreeLUT has been developed as a part of the following publication. The paper is availale on [ACM DL](https://doi.org/10.1145/3706628.3708877) and [arXiv](https://doi.org/10.48550/arXiv.2501.01511).
-
-> Alireza Khataei and Kia Bazargan. 2025. TreeLUT: An Efficient Alternative to Deep Neural Networks for Inference Acceleration Using Gradient Boosted Decision Trees. In Proceedings of the 2025 ACM/SIGDA International Symposium on Field Programmable Gate Arrays (FPGA ’25), February 27-March 1, 2025, Monterey, CA, USA. ACM, New York, NY, USA, 11 pages.
-
-**This repository is a fork of the original [TreeLUT](https://github.com/Olavo-B/LUT2GPU.git), with the following changes:**
+**This repository is a fork of the original [TreeLUT]([https://github.com/Olavo-B/LUT2GPU.git](https://github.com/kiabuzz/TreeLUT.git)), with the following changes:**
 - Added a verilog parser to generate mux trees instead of equations.
 - Incorporated the argmax and quantization functions to the TreeLUT verilog main module.
   
