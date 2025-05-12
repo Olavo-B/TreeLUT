@@ -1,6 +1,6 @@
  ## TreeLUT
 
-**This repository is a fork of the original [TreeLUT]([https://github.com/Olavo-B/LUT2GPU.git](https://github.com/kiabuzz/TreeLUT.git)), with the following changes:**
+**This repository is a fork of the original [TreeLUT](https://github.com/kiabuzz/TreeLUT.git), with the following changes:**
 - Added a verilog parser to generate mux trees instead of equations.
 - Incorporated the argmax and quantization functions to the TreeLUT verilog main module.
   
