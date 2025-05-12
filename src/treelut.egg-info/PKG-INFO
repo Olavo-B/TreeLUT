@@ -1,0 +1,16 @@
+Metadata-Version: 2.4
+Name: treelut
+Version: 1.0.2
+Summary: An Efficient Alternative to Deep Neural Networks for Inference Acceleration Using Gradient Boosted Decision Trees
+Home-page: https://github.com/kiabuzz/TreeLUT
+Author: Alireza Khataei, Kia Bazargan
+License: MIT
+License-File: LICENSE
+Requires-Dist: numpy
+Requires-Dist: xgboost>=2.1.1
+Dynamic: author
+Dynamic: home-page
+Dynamic: license
+Dynamic: license-file
+Dynamic: requires-dist
+Dynamic: summary

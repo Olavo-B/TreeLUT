@@ -1,0 +1,2 @@
+numpy
+xgboost>=2.1.1
