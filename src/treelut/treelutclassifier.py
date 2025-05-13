@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 
 class TreeLUTClassifier:
-    def __init__(self, xgb_model, w_feature, w_tree, pipeline=[0, 0, 0], dir_path="./"):
+    def __init__(self, xgb_model, w_feature, w_tree, pipeline=[0, 0, 0], dir_path="./", style='mux'):
         self._folder_created = False
         self._xgb_model = xgb_model
         self._objective = xgb_model.objective
@@ -24,6 +24,7 @@ class TreeLUTClassifier:
         self._n_trees_per_class = xgb_model.n_estimators
         self._sum_bit_length = None
         self._classes_bias = None
+        self._style = self._set_style(style)
         if(self._objective == 'binary:logistic'):
             self._n_classes = 1
             config_dict = json.loads(xgb_model.get_booster().save_config())
@@ -84,6 +85,11 @@ class TreeLUTClassifier:
             self._verilog_testbench(np.array(X_test), np.array(y_test))
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
+    
+    def _set_style(self, style):
+        if style not in ['mux', 'equation']:
+            raise ValueError("Style must be either 'mux' or 'equation'.")
+        return style
         
     def _bitwidth(self, N):
         if N >= 0:
@@ -247,72 +253,75 @@ class TreeLUTClassifier:
                 if(tree[idx]['type'] == 'leaf'):
                     all_leaves.extend([(idx, tree[idx]['value'])])                
 
-            # for leaf in all_leaves:
-            #     node_idx = leaf[0]
-            #     path_parts = []
-            #     while node_idx != 0:
-            #         parent_idx = tree[node_idx]['parent_node']
-            #         parent_yesno = tree[node_idx]['parent_yesno']
-            #         parent_feature = (tree[parent_idx]['feature'], tree[parent_idx]['threshold'])
-            #         unique_feature_idx = unique_features.index(parent_feature)
-            #         if parent_yesno == 'yes':
-            #             path_parts.append(f"i[{unique_feature_idx}]")
-            #         else:
-            #             path_parts.append(f"(~i[{unique_feature_idx}])")
-            #         node_idx = parent_idx
-            #     # Inverte os caminhos porque construímos do nó até a raiz
-            #     path_parts = path_parts[::-1]
-            #     path_str = ' & '.join(path_parts)
-            #     path_encoded[int(leaf[1])].append(path_str)
+            if self._style == 'equation':
+                for leaf in all_leaves:
+                    node_idx = leaf[0]
+                    path_parts = []
+                    while node_idx != 0:
+                        parent_idx = tree[node_idx]['parent_node']
+                        parent_yesno = tree[node_idx]['parent_yesno']
+                        parent_feature = (tree[parent_idx]['feature'], tree[parent_idx]['threshold'])
+                        unique_feature_idx = unique_features.index(parent_feature)
+                        if parent_yesno == 'yes':
+                            path_parts.append(f"i[{unique_feature_idx}]")
+                        else:
+                            path_parts.append(f"(~i[{unique_feature_idx}])")
+                        node_idx = parent_idx
+                    # Inverte os caminhos porque construímos do nó até a raiz
+                    path_parts = path_parts[::-1]
+                    path_str = ' & '.join(path_parts)
+                    path_encoded[int(leaf[1])].append(path_str)
 
 
             # 2025-05-08 19:20:21
             # Representation of the tree with mux (ternary operator)
             # Do a BFS traversal of the tree and for each node, save the mux
-            mux_encoded = ['' for _ in range(len(tree))]
-            path_max = 0
-                
-            queue = [(0, '')]  # Start with the (root node, mux string)
-            while queue:
-                current_idx, mux_str = queue.pop(0)
-                if tree[current_idx]['type'] == 'leaf':
-                    continue
-                yes_node = tree[current_idx]['yes']
-                no_node = tree[current_idx]['no']                    
-                parent_feature = (tree[current_idx]['feature'], tree[current_idx]['threshold'])
-                unique_feature_idx = unique_features.index(parent_feature)
-                comparator = f"i[{unique_feature_idx}]"
-                # If is leaf, change idx to value
-                if tree[yes_node]['type'] == 'leaf' and tree[no_node]['type'] == 'leaf': # Two leaves
-                    yes_node = tree[yes_node]['value']
-                    no_node = tree[no_node]['value']
-                    mux_str += f"assign new_{current_idx} = {comparator} ? {yes_node} : {no_node};\n"
-                    path_max = max(path_max, yes_node, no_node)
-                elif tree[yes_node]['type'] == 'leaf': # Yes is leaf
-                    yes_node = tree[yes_node]['value']
-                    mux_str += f"assign new_{current_idx} = {comparator} ? {yes_node} : new_{no_node};\n"
-                    path_max = max(path_max, yes_node)
-                elif tree[no_node]['type'] == 'leaf': # No is leaf
-                    no_node = tree[no_node]['value']
-                    mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : {no_node};\n"
-                    path_max = max(path_max, no_node)
-                elif current_idx == 0: # Root node
-                    mux_str += f"assign o = {comparator} ? new_{yes_node} : new_{no_node};\n"
-                else: # Not leaf
-                    mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : new_{no_node};\n"
-                mux_encoded[current_idx] = mux_str
-                yes_node = tree[current_idx]['yes']
-                no_node = tree[current_idx]['no']
-                queue.append((yes_node, ''))
-                queue.append((no_node, ''))
+            if self._style == 'mux':
+                mux_encoded = ['' for _ in range(len(tree))]
+                path_max = 0
+                    
+                queue = [(0, '')]  # Start with the (root node, mux string)
+                while queue:
+                    current_idx, mux_str = queue.pop(0)
+                    if tree[current_idx]['type'] == 'leaf':
+                        continue
+                    yes_node = tree[current_idx]['yes']
+                    no_node = tree[current_idx]['no']                    
+                    parent_feature = (tree[current_idx]['feature'], tree[current_idx]['threshold'])
+                    unique_feature_idx = unique_features.index(parent_feature)
+                    comparator = f"i[{unique_feature_idx}]"
+                    # If is leaf, change idx to value
+                    if tree[yes_node]['type'] == 'leaf' and tree[no_node]['type'] == 'leaf': # Two leaves
+                        yes_node = tree[yes_node]['value']
+                        no_node = tree[no_node]['value']
+                        mux_str += f"assign new_{current_idx} = {comparator} ? {yes_node} : {no_node};\n"
+                        path_max = max(path_max, yes_node, no_node)
+                    elif tree[yes_node]['type'] == 'leaf': # Yes is leaf
+                        yes_node = tree[yes_node]['value']
+                        mux_str += f"assign new_{current_idx} = {comparator} ? {yes_node} : new_{no_node};\n"
+                        path_max = max(path_max, yes_node)
+                    elif tree[no_node]['type'] == 'leaf': # No is leaf
+                        no_node = tree[no_node]['value']
+                        mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : {no_node};\n"
+                        path_max = max(path_max, no_node)
+                    elif current_idx == 0: # Root node
+                        mux_str += f"assign o = {comparator} ? new_{yes_node} : new_{no_node};\n"
+                    else: # Not leaf
+                        mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : new_{no_node};\n"
+                    mux_encoded[current_idx] = mux_str
+                    yes_node = tree[current_idx]['yes']
+                    no_node = tree[current_idx]['no']
+                    queue.append((yes_node, ''))
+                    queue.append((no_node, ''))
 
 
-            # path_max = 2**self._w_tree-1
-            # for path in reversed(path_encoded):
-            #     if(len(path) == 0):
-            #         path_max -= 1
-            #     else:
-            #         break
+            if self._style == 'equation':
+                path_max = 2**self._w_tree-1
+                for path in reversed(path_encoded):
+                    if(len(path) == 0):
+                        path_max -= 1
+                    else:
+                        break
             
 
             print(f"Info: Class {class_number} Tree {tree_number} has {len(all_leaves)} leaves and {len(tree)-len(all_leaves)} nodes. Path max: {path_max}.")
@@ -324,62 +333,64 @@ class TreeLUTClassifier:
             file = open(os.path.join(self._dir_path, f"verilog/{tree_name}.v"), 'w')
             file.write(f"module {tree_name}(input wire [{len(unique_features)-1}:0] i, output wire [{path_output_bit-1}:0] o);\n\n")
 
-            # #2025-05-08 10:08:57
-            # # for each path, need to create a wire
-            # for score_idx, score_output in enumerate(path_encoded):
-            #     wire_name_score = f"new_{score_idx}"
-            #     for path_idx, path in enumerate(score_output):
-            #         wire_name = f"new_{score_idx}_{path_idx}"
-            #         if path_idx == 0:
-            #             file.write(f"wire {wire_name}, ")
-            #             continue
-            #         file.write(f"{wire_name}, ")
-            #     if len(score_output) == 0:
-            #         continue
-            #     file.write(f" {wire_name_score};\n")
+            if self._style == 'equation':
+                #2025-05-08 10:08:57
+                # for each path, need to create a wire
+                for score_idx, score_output in enumerate(path_encoded):
+                    wire_name_score = f"new_{score_idx}"
+                    for path_idx, path in enumerate(score_output):
+                        wire_name = f"new_{score_idx}_{path_idx}"
+                        if path_idx == 0:
+                            file.write(f"wire {wire_name}, ")
+                            continue
+                        file.write(f"{wire_name}, ")
+                    if len(score_output) == 0:
+                        continue
+                    file.write(f" {wire_name_score};\n")
 
 
-            # #2025-05-08 10:09:04
-            # # for each path, need to create a assign statement
-            # for score_idx, score_output in enumerate(path_encoded):
-            #     score_output_temp = ''
-            #     for path_idx, path in enumerate(score_output):
-            #         wire_name = f"new_{score_idx}_{path_idx}"
-            #         file.write(f"assign {wire_name} = {path};\n")
-            #         score_output_temp += f"{wire_name} | "
-            #     wire_name_score = f"new_{score_idx}"
-            #     if score_output_temp != '':
-            #         file.write(f"assign {wire_name_score} = {score_output_temp[:-3]};\n")
+                #2025-05-08 10:09:04
+                # for each path, need to create a assign statement
+                for score_idx, score_output in enumerate(path_encoded):
+                    score_output_temp = ''
+                    for path_idx, path in enumerate(score_output):
+                        wire_name = f"new_{score_idx}_{path_idx}"
+                        file.write(f"assign {wire_name} = {path};\n")
+                        score_output_temp += f"{wire_name} | "
+                    wire_name_score = f"new_{score_idx}"
+                    if score_output_temp != '':
+                        file.write(f"assign {wire_name_score} = {score_output_temp[:-3]};\n")
 
-            # #2025-05-08 10:09:11
-            # # assign the output with ternary operator
-            # file.write(f"assign o = new_0 ? 0 : ")
-            # for score_idx, score_output in enumerate(path_encoded):
-            #     if score_idx == 0: 
-            #         continue
-            #     if len(score_output) == 0:
-            #         continue
-            #     if score_idx == path_max:
-            #         file.write(f"{path_max};\n")
-            #         break
-            #     wire_name_score = f"new_{score_idx}"
-            #     file.write(f"{wire_name_score} ? {score_idx} : ")
-           
-
-            # 2025-05-09 07:59:40
-            # for each mux encoded, create a wire
-            for idx, mux in enumerate(mux_encoded):
-                if(mux == '' or idx == 0):
-                    continue
-                mux_name = mux.split(' ')[1]
-                file.write(f"wire [{path_output_bit-1}:0] {mux_name};\n")
-        
-       
+                #2025-05-08 10:09:11
+                # assign the output with ternary operator
+                file.write(f"assign o = new_0 ? 0 : ")
+                for score_idx, score_output in enumerate(path_encoded):
+                    if score_idx == 0: 
+                        continue
+                    if len(score_output) == 0:
+                        continue
+                    if score_idx == path_max:
+                        file.write(f"{path_max};\n")
+                        break
+                    wire_name_score = f"new_{score_idx}"
+                    file.write(f"{wire_name_score} ? {score_idx} : ")
             
-            for mux in reversed(mux_encoded):
-                if(mux == ''):
-                    continue
-                file.write(mux)
+
+            if self._style == 'mux':
+                # 2025-05-09 07:59:40
+                # for each mux encoded, create a wire
+                for idx, mux in enumerate(mux_encoded):
+                    if(mux == '' or idx == 0):
+                        continue
+                    mux_name = mux.split(' ')[1]
+                    file.write(f"wire [{path_output_bit-1}:0] {mux_name};\n")
+            
+        
+                
+                for mux in reversed(mux_encoded):
+                    if(mux == ''):
+                        continue
+                    file.write(mux)
 
 
             file.write("\n")    
