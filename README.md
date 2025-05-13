@@ -8,7 +8,7 @@
 Use the following commands to clone the repository and install the package.
 
 ```bash
-git clone https://github.com/kiabuzz/TreeLUT.git
+git clone https://github.com/Olavo-B/TreeLUT.git
 cd TreeLUT
 python3 -m venv env
 source env/bin/activate
