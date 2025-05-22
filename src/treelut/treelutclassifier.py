@@ -291,7 +291,20 @@ class TreeLUTClassifier:
                     unique_feature_idx = unique_features.index(parent_feature)
                     comparator = f"i[{unique_feature_idx}]"
                     # If is leaf, change idx to value
-                    if tree[yes_node]['type'] == 'leaf' and tree[no_node]['type'] == 'leaf': # Two leaves
+                    if current_idx == 0: # Root node
+                        if tree[yes_node]['type'] == 'leaf' and tree[no_node]['type'] == 'leaf':
+                            yes_node = tree[yes_node]['value']
+                            no_node = tree[no_node]['value']
+                            mux_str += f"assign o = {comparator} ? {yes_node} : {no_node};\n"
+                        elif tree[yes_node]['type'] == 'leaf':
+                            yes_node = tree[yes_node]['value']
+                            mux_str += f"assign o = {comparator} ? {yes_node} : new_{no_node};\n"
+                        elif tree[no_node]['type'] == 'leaf':
+                            no_node = tree[no_node]['value']
+                            mux_str += f"assign o = {comparator} ? new_{yes_node} : {no_node};\n"
+                        else:
+                            mux_str += f"assign o = {comparator} ? new_{yes_node} : new_{no_node};\n"
+                    elif tree[yes_node]['type'] == 'leaf' and tree[no_node]['type'] == 'leaf': # Two leaves
                         yes_node = tree[yes_node]['value']
                         no_node = tree[no_node]['value']
                         mux_str += f"assign new_{current_idx} = {comparator} ? {yes_node} : {no_node};\n"
@@ -304,8 +317,6 @@ class TreeLUTClassifier:
                         no_node = tree[no_node]['value']
                         mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : {no_node};\n"
                         path_max = max(path_max, no_node)
-                    elif current_idx == 0: # Root node
-                        mux_str += f"assign o = {comparator} ? new_{yes_node} : new_{no_node};\n"
                     else: # Not leaf
                         mux_str += f"assign new_{current_idx} = {comparator} ? new_{yes_node} : new_{no_node};\n"
                     mux_encoded[current_idx] = mux_str
