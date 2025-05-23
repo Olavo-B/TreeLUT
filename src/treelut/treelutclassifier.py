@@ -5,7 +5,7 @@ import shutil
 import numpy as np
 
 class TreeLUTClassifier:
-    def __init__(self, xgb_model, w_feature, w_tree, pipeline=[0, 0, 0], dir_path="./", style='mux'):
+    def __init__(self, xgb_model, w_feature, w_tree, pipeline=[0, 0, 0], dir_path="./", style='mux', argmax=True):
         self._folder_created = False
         self._xgb_model = xgb_model
         self._objective = xgb_model.objective
@@ -24,7 +24,12 @@ class TreeLUTClassifier:
         self._n_trees_per_class = xgb_model.n_estimators
         self._sum_bit_length = None
         self._classes_bias = None
+
+        # 2025-05-22 15:33:30
+        # This parameters are new ones create by Olavo Barros
+        self._argmax = argmax
         self._style = self._set_style(style)
+
         if(self._objective == 'binary:logistic'):
             self._n_classes = 1
             config_dict = json.loads(xgb_model.get_booster().save_config())
@@ -83,6 +88,8 @@ class TreeLUTClassifier:
         if(self._status == 'quantized'):
             os.makedirs(os.path.join(self._dir_path, 'testbench'))
             self._verilog_testbench(np.array(X_test), np.array(y_test))
+            self._compile_file()
+
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
@@ -512,14 +519,25 @@ class TreeLUTClassifier:
             
         for i in range(self._n_classes):
             trees_range = f"{trees_bit_length[0:(i+1)*self._n_trees_per_class].sum()-1}:{trees_bit_length[0:(i)*self._n_trees_per_class].sum()}"
-            file.write(f"class{i}_adder class{i}_adder_inst({adder_clk}.i({tree_output_name}[{trees_range}]), .o(o[{(i+1)*self._sum_bit_length-1}:{i*self._sum_bit_length}]));\n") 
+            if self._argmax:
+                file.write(f"class{i}_adder class{i}_adder_inst({adder_clk}.i({tree_output_name}[{trees_range}]), .o(treelut_output[{(i+1)*self._sum_bit_length-1}:{i*self._sum_bit_length}]));\n") 
+            else:
+                file.write(f"class{i}_adder class{i}_adder_inst({adder_clk}.i({tree_output_name}[{trees_range}]), .o(o[{(i+1)*self._sum_bit_length-1}:{i*self._sum_bit_length}]));\n") 
             self._verilog_addertree(i, self._classes_bias[i], trees_bit_length[i*self._n_trees_per_class:(i+1)*self._n_trees_per_class])
+        
+        if self._argmax:
+            file.write(f"\n\nargmax argmax_inst(treelut_output, o);\n\n")
         file.close()
     
     def _verilog_ports(self):
         file_path = os.path.join(self._dir_path, 'verilog/TreeLUT.v')
+        n_output_bits = self._bitwidth(self._n_classes-1)
         if(self._pipeline[0] == 0 and self._pipeline[1] == 0 and self._pipeline[2] == 0):
-            first_line = f"module TreeLUT(input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{self._n_classes*self._sum_bit_length-1}:0] o);\n\n"
+            if self._argmax:
+                first_line = f"module TreeLUT(input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{n_output_bits-1}:0] o);\n\n"
+                first_line += f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n"
+            else:
+                first_line = f"module TreeLUT(input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{self._n_classes*self._sum_bit_length-1}:0] o);\n\n"
         else:
             first_line = f"module TreeLUT(input wire clk, input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{self._n_classes*self._sum_bit_length-1}:0] o);\n\n"
         last_line = f"\nendmodule\n"
@@ -529,6 +547,8 @@ class TreeLUTClassifier:
             
         with open(file_path, 'w') as file:
             file.write(first_line + content + last_line)
+            if self._argmax:
+                self._argmax_module(file)
             
     def _verilog_myreg(self):
         if(self._pipeline[0] != 0 or self._pipeline[1] != 0 or self._pipeline[2] != 0):
@@ -560,9 +580,10 @@ class TreeLUTClassifier:
             f.write(f"reg [{n_output_bits-1}:0] y_test [0:{len(y_test)-1}];\n\n")
             
             f.write(f"reg [{self._n_features*self._w_feature-1}:0] treelut_input;\n")
-            f.write(f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n\n")
-            
-            f.write(f"wire [{n_output_bits-1}:0] out_predicted;\n")
+            if not self._argmax: #2025-05-22 15:34:49: Do not incorporate argmax module:
+                f.write(f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n\n")
+
+            f.write(f"wire [{n_output_bits-1}:0] out_predicted;\n\n")            
             f.write(f"reg [{n_output_bits-1}:0] out_expected;\n\n")
             
             f.write(f"integer i, j;\n")
@@ -572,12 +593,16 @@ class TreeLUTClassifier:
             f.write(f"reg [{n_address_bits-1}:0] result_true;\n")
             
             if(self._pipeline[0] == 0 and self._pipeline[1] == 0 and self._pipeline[2] == 0):
-                f.write(f"\nTreeLUT TreeLUT_inst(treelut_input, treelut_output);\n")
+                if self._argmax:
+                    f.write(f"TreeLUT TreeLUT_inst(treelut_input, out_predicted);\n")
+                else:
+                    f.write(f"\nTreeLUT TreeLUT_inst(treelut_input, treelut_output);\n")
             else:
                 f.write(f"reg clk;\n\n")
                 f.write(f"TreeLUT TreeLUT_inst(clk, treelut_input, treelut_output);\n")
-                
-            f.write(f"argmax argmax_inst(treelut_output, out_predicted);\n\n")
+
+            if not self._argmax: #2025-05-22 15:34:49: Do not incorporate argmax module    
+                f.write(f"argmax argmax_inst(treelut_output, out_predicted);\n\n")
             
             f.write(f"initial begin\n\t\n\tresult_false <= 0; result_true <= 0;\n\t$readmemb(\"X_test.mem\", x_test); $readmemb(\"y_test.mem\", y_test);\nend\n\n")
             
@@ -592,32 +617,65 @@ class TreeLUTClassifier:
             f.write(f"\t#10\n\t$display(\"Result: %d/%d\", result_true, result_false);\n")
             f.write(f"\t$finish;\nend\nendmodule")
 
-            f.write(f"\n\nmodule argmax(")
-            f.write(f"input wire [{self._n_classes*self._sum_bit_length-1}:0] i, ")
-            f.write(f"output reg [{n_output_bits-1}:0] o);\n\n")
+            if not self._argmax: #2025-05-22 15:34:49: Do not incorporate argmax module
+                self._argmax_module(f)
 
-            f.write(f"wire [{self._sum_bit_length-1}:0] sum [0:{self._n_classes-1}];\n")
-            for i in range(self._n_classes):
-                f.write(f"assign sum[{i}] = i[{(i+1)*(self._sum_bit_length)-1}:{i*(self._sum_bit_length)}];\n")
-
-            f.write("always @(*) begin")
-            if(self._n_classes == 1):
-                f.write(f"\n\tif(sum[0] >= {int(self._threshold)})\n\t\to = 1;\n\telse\n\t\to = 0;\n")
-            else:
-                for i in range(self._n_classes):
-                    if(i == 0):
-                        f.write(f"\n\tif(")
-                    elif(i == self._n_classes-1):
-                        f.write(f"\telse\n\t\to = {n_output_bits}'d{i};\n")
-                        break
-                    else:
-                        f.write(f"\telse if(")
-                    comprator_str = ''
-                    for j in range(self._n_classes):
-                        if(i >= j):
-                            continue
-                        comprator_str += f"(sum[{i}] >= sum[{j}]) & "
-                    f.write(comprator_str[:-3] + f")\n\t\to = {n_output_bits}'d{i};\n")
-
-            f.write("end\n\nendmodule\n")
+            
             f.close()
+
+    def _argmax_module(self, file):
+
+            # n_output_bits calculation assumes self._n_classes >= 1, as _bitwidth receives self._n_classes-1.
+            n_output_bits = self._bitwidth(self._n_classes-1)
+
+            file.write(f"\n\nmodule argmax(")
+            # Input 'i' wire width calculation: self._n_classes * self._sum_bit_length must be >= 1
+            # for a valid range [{width-1}:0]. Assumes self._n_classes >= 1 here.
+            file.write(f"input wire [{self._n_classes*self._sum_bit_length-1}:0] i, ")
+            file.write(f"output wire [{n_output_bits-1}:0] o);\n\n")
+
+            if self._n_classes > 0: # Define sum wires only if classes exist; prevents sum[0:-1] if n_classes=0.
+                file.write(f"wire [{self._sum_bit_length-1}:0] sum [0:{self._n_classes-1}];\n")
+                for i_idx in range(self._n_classes):
+                    file.write(f"assign sum[{i_idx}] = i[{(i_idx+1)*(self._sum_bit_length)-1}:{i_idx*(self._sum_bit_length)}];\n")
+            # If self._n_classes is 0, no sum wires are created.
+            # The 'assign o' logic below relies on self._n_classes >= 1 for its current structure.
+
+            # Generate priority logic using a ternary expression chain
+            file.write(f"\nassign o = ")
+
+            # Loop for the first N-1 classes (where N = self._n_classes).
+            # If N=1, this loop (range(0)) is skipped, and 'o' is directly assigned the index of the only class.
+            for i_idx in range(self._n_classes - 1):
+                conditions = []
+                # Condition: sum[i_idx] must be greater than or equal to all other sums (sum[j] for j != i_idx)
+                for j_idx in range(self._n_classes):
+                    if i_idx == j_idx:
+                        continue
+                    conditions.append(f"(sum[{i_idx}] >= sum[{j_idx}])")
+                
+                cond_str = " & ".join(conditions)
+                # Parentheses around cond_str for robustness in the ternary operator
+                file.write(f"({cond_str}) ? {n_output_bits}'d{i_idx} :\n ")
+
+            # The last class (index N-1) becomes the final 'else' case.
+            # If N=1, this evaluates to {n_output_bits}'d0.
+            # This line assumes N (self._n_classes) >= 1.
+            file.write(f"{n_output_bits}'d{self._n_classes-1};\n")
+
+            file.write("endmodule\n")
+        
+    def _compile_file(self):
+        """
+        .txt file with the path to all verilog files to be compiled.
+        The file is created in the same directory as the testbench files.
+        """
+
+        
+        with open(os.path.join(self._dir_path, 'testbench/compile.txt'), 'w') as f:
+            f.write(f"{self._dir_path}/testbench/testbench.v\n")
+            for root, dirs, files in os.walk(os.path.join(self._dir_path, 'verilog')):
+                for file in files:
+                    if file.endswith('.v'):
+                        f.write(os.path.join(root, file) + "\n")
+            f.write("\n")
