@@ -5,7 +5,8 @@ import shutil
 import numpy as np
 
 class TreeLUTClassifier:
-    def __init__(self, xgb_model, w_feature, w_tree, pipeline=[0, 0, 0], dir_path="./", style='mux', argmax=True):
+    def __init__(self, xgb_model, w_feature, w_tree, bits_features, pipeline=[0, 0, 0], dir_path="./", style='mux', argmax=False, quantized=False, min=None, max=None):
+    
         self._folder_created = False
         self._xgb_model = xgb_model
         self._objective = xgb_model.objective
@@ -27,7 +28,10 @@ class TreeLUTClassifier:
 
         # 2025-05-22 15:33:30
         # This parameters are new ones create by Olavo Barros
+        self._bits_features = bits_features
         self._argmax = argmax
+        self._quantided = quantized
+        self._X_min, self._X_max = min, max
         self._style = self._set_style(style)
 
         if(self._objective == 'binary:logistic'):
@@ -533,11 +537,23 @@ class TreeLUTClassifier:
         file_path = os.path.join(self._dir_path, 'verilog/TreeLUT.v')
         n_output_bits = self._bitwidth(self._n_classes-1)
         if(self._pipeline[0] == 0 and self._pipeline[1] == 0 and self._pipeline[2] == 0):
+
+            input_wire = f"input wire [{self._n_features*self._w_feature-1}:0] i, "
+            output_wire = f"output wire [{self._n_classes*self._sum_bit_length-1}:0] o"
+            additional_wire = ""
+
             if self._argmax:
-                first_line = f"module TreeLUT(input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{n_output_bits-1}:0] o);\n\n"
-                first_line += f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n"
-            else:
-                first_line = f"module TreeLUT(input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{self._n_classes*self._sum_bit_length-1}:0] o);\n\n"
+                output_wire = f"output wire [{n_output_bits-1}:0] o"
+                additional_wire += f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n"
+            if self._quantided:
+                input_wire = f"input wire [{self._n_features*self._bits_features-1}:0] all_features,"
+                additional_wire += f"wire [{self._n_features*self._w_feature-1}:0] i;\n"
+                additional_wire += f"\n\n quantization quantization_inst(all_features, i);\n"
+
+
+            
+            first_line = f"module TreeLUT({input_wire}{output_wire});\n\n"
+            first_line += additional_wire + "\n"
         else:
             first_line = f"module TreeLUT(input wire clk, input wire [{self._n_features*self._w_feature-1}:0] i, output wire [{self._n_classes*self._sum_bit_length-1}:0] o);\n\n"
         last_line = f"\nendmodule\n"
@@ -549,6 +565,8 @@ class TreeLUTClassifier:
             file.write(first_line + content + last_line)
             if self._argmax:
                 self._argmax_module(file)
+            if self._quantided:
+                self._quantization_module(file)
             
     def _verilog_myreg(self):
         if(self._pipeline[0] != 0 or self._pipeline[1] != 0 or self._pipeline[2] != 0):
@@ -563,7 +581,10 @@ class TreeLUTClassifier:
             for key in X_test:
                 for value in np.flip(key):
                     x_val = value
-                    binary_string = format(int(x_val), f'0{self._w_feature}b')
+                    if self._quantided:
+                        binary_string = format(int(x_val), f'0{self._bits_features}b')
+                    else:
+                        binary_string = format(int(x_val), f'0{self._w_feature}b')
                     f.write(binary_string)
                 f.write("\n")
                 
@@ -576,10 +597,16 @@ class TreeLUTClassifier:
                 
         with open(os.path.join(self._dir_path, 'testbench/testbench.v'), 'w') as f:
             n_output_bits = self._bitwidth(self._n_classes-1)
-            f.write(f"`timescale 1ns/1ps\n\nmodule sim ();\n\nreg [{self._n_features*self._w_feature-1}:0] x_test [0:{len(y_test)-1}];\n")
+            if self._quantided:
+                f.write(f"`timescale 1ns/1ps\n\nmodule sim ();\n\nreg [{self._n_features*self._bits_features-1}:0] x_test [0:{len(y_test)-1}];\n")
+            else:
+                f.write(f"`timescale 1ns/1ps\n\nmodule sim ();\n\nreg [{self._n_features*self._w_feature-1}:0] x_test [0:{len(y_test)-1}];\n")
             f.write(f"reg [{n_output_bits-1}:0] y_test [0:{len(y_test)-1}];\n\n")
             
-            f.write(f"reg [{self._n_features*self._w_feature-1}:0] treelut_input;\n")
+            if self._quantided:
+                f.write(f"reg [{self._n_features*self._bits_features-1}:0] treelut_input;\n")
+            else:
+                f.write(f"reg [{self._n_features*self._w_feature-1}:0] treelut_input;\n")
             if not self._argmax: #2025-05-22 15:34:49: Do not incorporate argmax module:
                 f.write(f"wire [{self._n_classes*self._sum_bit_length-1}:0] treelut_output;\n\n")
 
@@ -664,6 +691,75 @@ class TreeLUTClassifier:
             file.write(f"{n_output_bits}'d{self._n_classes-1};\n")
 
             file.write("endmodule\n")
+    
+    # def _quantization_module(self, file):
+    #     file.write(f"\n\nmodule quantization(input wire [{self._n_features*self._bits_features-1}:0] i, output wire [{self._n_features*self._w_feature-1}:0] o);\n")
+        
+    #     # Generate assigns for each feature
+    #     for feature_idx in range(self._n_features):
+    #         # Calculate bit indices for current feature in input signal
+    #         input_msb = (feature_idx + 1) * self._bits_features - 1
+    #         input_lsb = feature_idx * self._bits_features
+            
+    #         # Calculate bit indices for current feature in output signal
+    #         output_msb = (feature_idx + 1) * self._w_feature - 1
+    #         output_lsb = feature_idx * self._w_feature
+            
+    #         # Calculate how many most significant bits to extract
+    #         # (assuming w_feature <= bits_features)
+    #         bits_to_extract = self._w_feature
+    #         start_bit = self._bits_features - bits_to_extract  # Start from most significant bits
+    #         end_bit = self._bits_features - 1
+            
+    #         # Generate assign statement for this feature
+    #         file.write(f"    assign o[{output_msb}:{output_lsb}] = i[{input_msb-start_bit}:{input_msb-end_bit}];\n")
+        
+    #     file.write("endmodule\n")
+    
+    def _get_threashold(self, X_min, X_max) -> np.ndarray:
+        """
+        Calculate the threshold for the quantization module based on the minimum and maximum values of the features.
+        The threshold is calculated as the (2**w-feature)-1 midpoints between the minimum and maximum values.
+        """
+
+        thresholds = np.zeros((self._n_features, 2**self._w_feature - 1))
+        for feature_idx in range(self._n_features):
+            min_val = X_min[feature_idx]
+            max_val = X_max[feature_idx]
+            step = int((max_val - min_val) / (2**self._w_feature - 1))
+            thresholds[feature_idx, 0] = int(min_val + step / 2)
+            for j in range(1, 2**self._w_feature - 1):
+                thresholds[feature_idx, j] = thresholds[feature_idx, j-1] + step
+        print(f"Info: Thresholds for quantization module: {thresholds}")
+        return thresholds
+       
+    
+    def _quantization_module(self, file):
+        file.write(f"\n\nmodule quantization(input wire [{self._n_features*self._bits_features-1}:0] i, output wire [{self._n_features*self._w_feature-1}:0] o);\n")
+
+        # Generate thresholds for each feature
+        thresholds = self._get_threashold(self._X_min, self._X_max)
+
+        for feature_idx in range(self._n_features):
+            # Calculate bit indices for current feature in input signal
+            input_msb = (feature_idx + 1) * self._bits_features - 1
+            input_lsb = feature_idx * self._bits_features
+            
+            # Calculate bit indices for current feature in output signal
+            output_msb = (feature_idx + 1) * self._w_feature - 1
+            output_lsb = feature_idx * self._w_feature
+            
+            # Generate assign statement for this feature
+            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {thresholds[feature_idx, 0]}) ? 0 : ")
+            for j in range(1, ((2**self._w_feature)-1)):
+                file.write(f"(i[{input_msb}:{input_lsb}] < {int(thresholds[feature_idx, j])}) ? {j} : ")
+            file.write(f"{2**self._w_feature - 1};\n")
+        file.write("endmodule\n")
+
+
+
+
+
         
     def _compile_file(self):
         """
