@@ -750,7 +750,7 @@ class TreeLUTClassifier:
             output_lsb = feature_idx * self._w_feature
             
             # Generate assign statement for this feature
-            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {thresholds[feature_idx, 0]}) ? 0 : ")
+            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {int(thresholds[feature_idx, 0])}) ? 0 : ")
             for j in range(1, ((2**self._w_feature)-1)):
                 file.write(f"(i[{input_msb}:{input_lsb}] < {int(thresholds[feature_idx, j])}) ? {j} : ")
             file.write(f"{2**self._w_feature - 1};\n")
