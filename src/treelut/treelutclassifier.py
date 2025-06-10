@@ -97,6 +97,7 @@ class TreeLUTClassifier:
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
+    
     def _set_style(self, style):
         if style not in ['mux', 'equation']:
             raise ValueError("Style must be either 'mux' or 'equation'.")
@@ -346,7 +347,7 @@ class TreeLUTClassifier:
                         break
             
 
-            print(f"Info: Class {class_number} Tree {tree_number} has {len(all_leaves)} leaves and {len(tree)-len(all_leaves)} nodes. Path max: {path_max}.")
+            # print(f"Info: Class {class_number} Tree {tree_number} has {len(all_leaves)} leaves and {len(tree)-len(all_leaves)} nodes. Path max: {path_max}.")
             path_output_bit = self._bitwidth(path_max)
             trees_bit_length[class_number, tree_number] = path_output_bit
 
@@ -441,7 +442,7 @@ class TreeLUTClassifier:
         return trees_bit_length
           
     def _verilog_addertree(self, class_number, class_bias, trees_bit_length):
-        print(f"Info: Creating adder tree for class {class_number}...")
+        # print(f"Info: Creating adder tree for class {class_number}...")
         file = open(os.path.join(self._dir_path, f"verilog/class{class_number}_adder.v"), 'w')
         file.write(f"module class{class_number}_adder(")
         if(self._pipeline[2] != 0):
@@ -726,12 +727,27 @@ class TreeLUTClassifier:
         for feature_idx in range(self._n_features):
             min_val = X_min[feature_idx]
             max_val = X_max[feature_idx]
+            if min_val == max_val - 1:
+                # If min and max are one scale apart, set all thresholds to -1
+                # This indicates that the feature is constant and does not need quantization.
+                thresholds[feature_idx, :] = -1
+                continue
             step = int((max_val - min_val) / (2**self._w_feature - 1))
             thresholds[feature_idx, 0] = int(min_val + step / 2)
             for j in range(1, 2**self._w_feature - 1):
                 thresholds[feature_idx, j] = thresholds[feature_idx, j-1] + step
-        print(f"Info: Thresholds for quantization module: {thresholds}")
+        # print(f"Info: Thresholds for quantization module: {thresholds}")
         return thresholds
+
+    def _int_2_bitstring(self, value, bits):
+        """
+        Convert an integer value to a binary string representation with a fixed number of bits.
+        If the value is negative, it will be represented in two's complement form.
+        """
+        if value < 0:
+            value = (1 << bits) + value
+        result = format(value, f'0{bits}b')  # Format as binary with leading zeros
+        return f"{bits}'b{result}"  # Return as a string with 'bitsb' prefix for clarity
        
     
     def _quantization_module(self, file):
@@ -748,11 +764,17 @@ class TreeLUTClassifier:
             # Calculate bit indices for current feature in output signal
             output_msb = (feature_idx + 1) * self._w_feature - 1
             output_lsb = feature_idx * self._w_feature
+
+            if int(thresholds[feature_idx, 0]) == -1:
+                # If all thresholds are zero, assign the input directly to the output
+                # This is a special case where the feature is binary [X_min == 0, X_max == 1] and does not need quantization
+                file.write(f"    assign o[{output_msb}:{output_lsb}] = i[{input_msb}:{input_lsb}];\n")
+                continue
             
             # Generate assign statement for this feature
-            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {int(thresholds[feature_idx, 0])}) ? 0 : ")
+            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, 0]), self._bits_features)}) ? 0 : ")
             for j in range(1, ((2**self._w_feature)-1)):
-                file.write(f"(i[{input_msb}:{input_lsb}] < {int(thresholds[feature_idx, j])}) ? {j} : ")
+                file.write(f"(i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, j]), self._bits_features)}) ? {j} : ")
             file.write(f"{2**self._w_feature - 1};\n")
         file.write("endmodule\n")
 
