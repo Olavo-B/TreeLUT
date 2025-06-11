@@ -106,7 +106,9 @@ class TreeLUTClassifier:
             return nodes_count
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
-        
+
+     # 2025-06-11 16:35:33: Add this two methods to get the forest data structure
+     # and the bias of each class, so it can be used in the GPU parser   
     @property
     def trees(self):
         """Returns the TreeLUT model as a list of trees.
@@ -115,6 +117,17 @@ class TreeLUTClassifier:
 
         if(self._status == 'quantized'):
             return self._treelut_model
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
+        
+    @property
+    def classes_bias(self):
+        """Returns the bias of each class in the TreeLUT model.
+        This is used to adjust the output of the model.
+        """
+
+        if(self._status == 'quantized'):
+            return self._classes_bias
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
@@ -231,7 +244,7 @@ class TreeLUTClassifier:
         predictions = np.zeros((X_test.shape[0], self._n_classes))
         for i in range(self._n_classes):
             predictions[:, i] = self._classes_bias[i]
-
+        
         for i, tree in enumerate(treelut_model_numpy):
             class_number = i%self._n_classes
             predictions[:, class_number] += self._single_tree_predict(tree, X_test)
@@ -797,11 +810,6 @@ class TreeLUTClassifier:
                 file.write(f"(i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, j]), self._bits_features)}) ? {j} : ")
             file.write(f"{2**self._w_feature - 1};\n")
         file.write("endmodule\n")
-
-
-
-
-
         
     def _compile_file(self):
         """
