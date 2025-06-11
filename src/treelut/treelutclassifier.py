@@ -106,6 +106,17 @@ class TreeLUTClassifier:
             return nodes_count
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
+        
+    @property
+    def trees(self):
+        """Returns the TreeLUT model as a list of trees.
+        Each tree is represented as a dictionary with node information.
+        """
+
+        if(self._status == 'quantized'):
+            return self._treelut_model
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
     
     def _set_style(self, style):
         if style not in ['mux', 'equation']:
