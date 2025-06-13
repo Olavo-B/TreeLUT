@@ -131,6 +131,39 @@ class TreeLUTClassifier:
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
+    @property
+    def min(self):
+        """Returns the minimum value of the features used in the TreeLUT model.
+        This is used for quantization and normalization.
+        """
+
+        if(self._status == 'quantized'):
+            return self._X_min
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
+    
+    @property
+    def max(self):
+        """Returns the maximum value of the features used in the TreeLUT model.
+        This is used for quantization and normalization.
+        """
+
+        if(self._status == 'quantized'):
+            return self._X_max
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
+    
+    @property
+    def n_classes(self):
+        """Returns the number of classes in the TreeLUT model.
+        This is used to determine the output size of the model.
+        """
+
+        if(self._status == 'quantized'):
+            return self._n_trees_per_class
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
+    
     def _set_style(self, style):
         if style not in ['mux', 'equation']:
             raise ValueError("Style must be either 'mux' or 'equation'.")
