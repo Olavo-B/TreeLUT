@@ -160,7 +160,7 @@ class TreeLUTClassifier:
         """
 
         if(self._status == 'quantized'):
-            return self._n_trees_per_class
+            return len(self._xgb_model.classes_)
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
