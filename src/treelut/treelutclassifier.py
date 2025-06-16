@@ -195,17 +195,26 @@ class TreeLUTClassifier:
 
     def _format_model(self):
         formatted_trees = []
+        global_id = 0
         for tree_str in self._xgb_model.get_booster().get_dump():
             tree_lines = tree_str.strip().split('\n')
             nodes = {}
             for line in tree_lines:
                 if 'leaf' in line:
                     node_id, value = self._leaf_regex(line)
-                    nodes[node_id] = {'type': 'leaf', 'value': value}
+                    nodes[node_id] = {'type': 'leaf', 
+                                      'value': value,
+                                      'global_id': global_id}
                 else:
                     line_info = self._node_regex(line)
                     feature_idx = self._features.index(line_info['feature'])
-                    nodes[line_info['index']] = {'type': 'split', 'feature': feature_idx, 'threshold': line_info['threshold'], 'no': line_info['no_value'], 'yes': line_info['yes_value']}
+                    nodes[line_info['index']] = {'type': 'split', 
+                                                 'feature': feature_idx, 
+                                                 'threshold': line_info['threshold'], 
+                                                 'no': line_info['no_value'], 
+                                                 'yes': line_info['yes_value'], 
+                                                 'global_id': global_id}
+                global_id += 1
             formatted_trees.append(nodes)
         self._treelut_model = formatted_trees
 
