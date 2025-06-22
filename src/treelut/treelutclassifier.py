@@ -807,10 +807,19 @@ class TreeLUTClassifier:
                 # This indicates that the feature is constant and does not need quantization.
                 thresholds[feature_idx, :] = -1
                 continue
-            step = int((max_val - min_val) / (2**self._w_feature - 1))
-            thresholds[feature_idx, 0] = int(min_val + step / 2)
-            for j in range(1, 2**self._w_feature - 1):
-                thresholds[feature_idx, j] = thresholds[feature_idx, j-1] + step
+            if max_val - min_val <= 2**self._w_feature - 1:
+                # If the range is less than or equal to the number of thresholds, set the scale
+                # to 2**self._w_feature - 1 // max_val - min_val
+                thresholds[feature_idx, 0] = min_val
+                for j in range(1,  max_val - min_val + 1):
+                    thresholds[feature_idx, j] = thresholds[feature_idx, j-1] + 1
+                # Pop the rest of the thresholds if they are not needed
+                thresholds[feature_idx, max_val - min_val + 1:] = -1
+            else:
+                step = int((max_val - min_val) / (2**self._w_feature - 1))
+                thresholds[feature_idx, 0] = int(min_val + step / 2)
+                for j in range(1, 2**self._w_feature - 1):
+                    thresholds[feature_idx, j] = thresholds[feature_idx, j-1] + step
         # print(f"Info: Thresholds for quantization module: {thresholds}")
         return thresholds
 
@@ -845,12 +854,26 @@ class TreeLUTClassifier:
                 # This is a special case where the feature is binary [X_min == 0, X_max == 1] and does not need quantization
                 file.write(f"    assign o[{output_msb}:{output_lsb}] = i[{input_msb}:{input_lsb}];\n")
                 continue
-            
-            # Generate assign statement for this feature
-            file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, 0]), self._bits_features)}) ? 0 : ")
-            for j in range(1, ((2**self._w_feature)-1)):
-                file.write(f"(i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, j]), self._bits_features)}) ? {j} : ")
-            file.write(f"{2**self._w_feature - 1};\n")
+            elif int(thresholds[feature_idx, -1]) == -1:
+                # If the number of thresholds is less than 2**w_feature, each bicket
+                # is i + step, where stepe is 2**self._w_feature // (max - min)
+                # This is a special case where (max - min) is less than 2**self._w_feature
+                step = int((2**self._w_feature - 1) / (self._X_max[feature_idx] - self._X_min[feature_idx]))
+                file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, 0]), self._bits_features)}) ? {step} : ")
+                bucket = step
+                for j in range(1, len(thresholds[feature_idx]) - 1):
+                    if thresholds[feature_idx, j] == -1:
+                        break
+                    file.write(f"(i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, j]), self._bits_features)}) ? {bucket + step} : ")
+                    bucket += step
+                file.write(f"{2**self._w_feature - 1};\n")
+            else:
+                # Generate assign statement for this feature
+                file.write(f"    assign o[{output_msb}:{output_lsb}] = (i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, 0]), self._bits_features)}) ? 0 : ")
+                for j in range(1, (len(thresholds[feature_idx]) -1)):
+                    file.write(f"(i[{input_msb}:{input_lsb}] < {self._int_2_bitstring(int(thresholds[feature_idx, j]), self._bits_features)}) ? {j} : ")
+                file.write(f"{2**self._w_feature - 1};\n")
+
         file.write("endmodule\n")
         
     def _compile_file(self):
