@@ -463,15 +463,20 @@ class TreeLUTClassifier:
                 # assign the output with ternary operator
                 file.write(f"assign o = new_0 ? 0 : ")
                 for score_idx, score_output in enumerate(path_encoded):
+                    # 2025-06-24 07:25:20
+                    # Exception case: if score_idx == 0 and path_max == 0:
+                    # Then: new_n ? n : n;
+                    if score_idx == path_max: 
+                        file.write(f"{path_max};\n")
+                        break
                     if score_idx == 0: 
                         continue
                     if len(score_output) == 0:
                         continue
-                    if score_idx == path_max:
-                        file.write(f"{path_max};\n")
-                        break
                     wire_name_score = f"new_{score_idx}"
                     file.write(f"{wire_name_score} ? {score_idx} : ")
+
+                
             
 
             if self._style == 'mux':
