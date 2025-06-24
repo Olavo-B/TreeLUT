@@ -164,6 +164,17 @@ class TreeLUTClassifier:
         else:
             print('Info: Please convert the model into a TreeLUT model first!')
     
+    @property
+    def max_depth(self):
+        """Returns the maximum depth of the trees in the TreeLUT model.
+        This is used to determine the complexity of the model.
+        """
+
+        if(self._status == 'quantized'):
+            return self._xgb_model.max_depth
+        else:
+            print('Info: Please convert the model into a TreeLUT model first!')
+
     def _set_style(self, style):
         if style not in ['mux', 'equation']:
             raise ValueError("Style must be either 'mux' or 'equation'.")
