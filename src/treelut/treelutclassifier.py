@@ -849,7 +849,6 @@ class TreeLUTClassifier:
         result = format(value, f'0{bits}b')  # Format as binary with leading zeros
         return f"{bits}'b{result}"  # Return as a string with 'bitsb' prefix for clarity
        
-    
     def _quantization_module(self, file):
         file.write(f"\n\nmodule quantization(input wire [{self._n_features*self._bits_features-1}:0] i, output wire [{self._n_features*self._w_feature-1}:0] o);\n")
 
@@ -871,7 +870,7 @@ class TreeLUTClassifier:
                 file.write(f"    assign o[{output_msb}:{output_lsb}] = i[{input_msb}:{input_lsb}];\n")
                 continue
             elif int(thresholds[feature_idx, -1]) == -1:
-                # If the number of thresholds is less than 2**w_feature, each bicket
+                # If the number of thresholds is less than 2**w_feature, each bucket
                 # is i + step, where stepe is 2**self._w_feature // (max - min)
                 # This is a special case where (max - min) is less than 2**self._w_feature
                 step = (2**self._w_feature - 1) / (self._X_max[feature_idx] - self._X_min[feature_idx])
