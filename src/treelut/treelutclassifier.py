@@ -18,11 +18,11 @@ from .xgbParser import BoostRegressionParser
 class TreeLUTClassifier:
     def __init__(self, xgb_model, w_feature, w_tree, bits_features, pipeline=[0, 0, 0], dir_path="./", style='mux', argmax=False, quantized=False, min=None, max=None):
         
-        print("Info: Initializing TreeLUTClassifier...")
+        #print("Info: Initializing TreeLUTClassifier...")
         self._folder_created = False
         self._xgb_model = xgb_model
         self._objective = xgb_model.objective
-        self._features = xgb_model.get_booster().feature_names
+        self._features = None #xgb_model.get_booster().feature_names
         if(self._features is None):
             self._features = [f"f{i}" for i in range(xgb_model.n_features_in_)]
         self._w_feature = w_feature
@@ -56,8 +56,10 @@ class TreeLUTClassifier:
         elif(self._objective == 'multi:softmax'):
             self._n_classes = xgb_model.n_classes_
         else:
-            self._status = 'error'
-            print("Error: TreeLUT currently supports the following XGBoost objectives: 'binary:logistic', 'multi:softmax'!")
+            # self._status = 'error'
+            # print("Error: TreeLUT currently supports the following XGBoost objectives: 'binary:logistic', 'multi:softmax'!")
+            self._n_classes = xgb_model.n_classes_
+
         
     def convert(self):
         """
@@ -65,33 +67,18 @@ class TreeLUTClassifier:
         """
         if(self._status == 'init'):
             # 1. Parse the model using xgbParser
-            print("Info: Parsing XGBoost model...")
+            #print("Info: Parsing XGBoost model...")
             self.parser = BoostRegressionParser(self._xgb_model)
             self._treelut_model = self.parser.trees # Get the un-quantized trees
             
             # 2. Quantize the model (modifies self._treelut_model in-place)
-            print("Info: Quantizing model...")
+            #print("Info: Quantizing model...")
             self._quantize_model()
             
-            # Note: We don't need to push the trees back into the parser,
-            # because the builder will receive the parser *and* the
-            # external quantization data (classes_bias, thresholds).
-            # Let's re-think: The builder from codeGen.py *does* expect
-            # the parser's trees to be the quantized ones.
-            # self.parser.trees = self._treelut_model # <-- This is not possible, 'trees' is a property.
-            # We must pass the *quantized* self._treelut_model to the builder.
-            
-            # Let's adjust the builder's __init__ to accept the quantized trees
-            # directly, OR adjust our plan.
-            
-            # --- Simpler Plan ---
-            # The builder in `codeGen.py` takes `treelut_model: BaseBoostParser`.
-            # Let's just modify the parser's internal model after quantization.
-            # `xgbParser.py` shows `self._forest_model`.
             self.parser._forest_model = self._treelut_model
             
             self._status = 'quantized'
-            print("Info: Model conversion and quantization complete.")
+            #print("Info: Model conversion and quantization complete.")
             
         elif(self._status == 'quantized'):
             print('Info: The model has already been converted!')
@@ -113,7 +100,7 @@ class TreeLUTClassifier:
             print('Info: Please convert the model into a TreeLUT model first!')
             return
 
-        print("Info: Starting Verilog generation...")
+        #print("Info: Starting Verilog generation...")
         if not self._folder_created:
             if os.path.exists(self._dir_path):
                 shutil.rmtree(self._dir_path)
@@ -129,7 +116,7 @@ class TreeLUTClassifier:
             thresholds_list = self._get_threashold(self._X_min, self._X_max)
 
         # 2. Instantiate the Builder
-        print("Info: Initializing TreeLUTBuilder...")
+        #print("Info: Initializing TreeLUTBuilder...")
         builder = TreeLUTBuilder(
             treelut_model=self.parser,
             w_feature=self._w_feature,
@@ -148,14 +135,14 @@ class TreeLUTClassifier:
         )
 
         # 3. Build the AST
-        print("Info: Building Hardware AST...")
+        #print("Info: Building Hardware AST...")
         modules_ast = builder.build_system()
 
         # 4. Instantiate the Visitor
         verilog_gen = VerilogVisitor()
 
         # 5. Generate Verilog code for each module
-        print(f"Info: Generating {len(modules_ast)} Verilog modules in {verilog_dir}...")
+        # print(f"Info: Generating {len(modules_ast)} Verilog modules in {verilog_dir}...")
         for module_name, module_ast in modules_ast.items():
             file_path = os.path.join(verilog_dir, f"{module_name}.v")
             try:
@@ -165,7 +152,7 @@ class TreeLUTClassifier:
             except Exception as e:
                 print(f"Error generating Verilog for module {module_name}: {e}")
         
-        print("Info: Verilog generation complete.")
+        #print("Info: Verilog generation complete.")
 
     def vhdl(self):
         """
@@ -175,7 +162,7 @@ class TreeLUTClassifier:
             print('Info: Please convert the model into a TreeLUT model first!')
             return
 
-        print("Info: Starting VHDL generation...")
+        #print("Info: Starting VHDL generation...")
         if not self._folder_created:
             if os.path.exists(self._dir_path):
                 shutil.rmtree(self._dir_path)
@@ -189,7 +176,7 @@ class TreeLUTClassifier:
         if self._quantized:
             thresholds_list = self._get_threashold(self._X_min, self._X_max)
 
-        print("Info: Initializing TreeLUTBuilder...")
+        #print("Info: Initializing TreeLUTBuilder...")
         builder = TreeLUTBuilder(
             treelut_model=self.parser,
             w_feature=self._w_feature,
@@ -207,7 +194,7 @@ class TreeLUTClassifier:
             thresholds=thresholds_list if self._quantized else [0] * self._n_features
         )
 
-        print("Info: Building Hardware AST...")
+        #print("Info: Building Hardware AST...")
         modules_ast = builder.build_system()
 
         vhdl_gen = VHDLVisitor()
@@ -222,7 +209,7 @@ class TreeLUTClassifier:
             except Exception as e:
                 print(f"Error generating VHDL for module {module_name}: {e}")
         
-        print("Info: VHDL generation complete.")
+        #print("Info: VHDL generation complete.")
             
     def testbench(self, X_test, y_test):
         if(self._folder_created == False):
@@ -364,19 +351,11 @@ class TreeLUTClassifier:
         self._classes_bias = (np.round((self._classes_bias) * scale)).astype(int)
 
     def _single_tree_predict(self, tree, X):
-        # This function expects a numpy array, let's adapt it to dict
-        # Or... let's check _model_predict
-        
-        # --- This logic is complex, let's adapt _model_predict instead ---
-        
-        # The original _single_tree_predict assumes a numpy array structure
-        # that was created *inside* _model_predict. We should keep
-        # _model_predict and _single_tree_predict as they were.
-        
+
+    
         node_id = np.zeros((X.shape[0], )).astype(int)
         
-        # We need the numpy-formatted tree here.
-        # Let's re-create it just for this function.
+  
         tree_numpy = self._convert_tree_to_numpy(tree)
         
         is_leaf = (tree_numpy[node_id, 1] == 1).astype(bool)

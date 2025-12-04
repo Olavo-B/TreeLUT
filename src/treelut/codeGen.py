@@ -79,6 +79,19 @@ class ConditionalAssign(Assignment):
         self.true_val = true_val
         self.false_val = false_val
 
+class AdderAssign(Assignment):
+    """Represents an addition: target = op1 + op2"""
+    def __init__(self, target, operand1, operand2, ta_width=None, op_width1=None, op_width2=None):
+        self.target = target
+        self.operand1 = operand1
+        self.operand2 = operand2
+
+        # NOTE - 2025-12-03 15:03:26: These are due the difference in bit-width
+        # handling VHDL needs the same width for both operands and target
+        self.ta_width = ta_width
+        self.op_width1 = op_width1
+        self.op_width2 = op_width2
+
 class ModuleInstance(HdlNode):
     def __init__(self, name, module_type, port_map, param_map=None):
         self.name = name               # "tree_0_inst"
@@ -233,10 +246,11 @@ Model Summary:
 - Number of features: {self._n_features}
 - Number of classes: {self._n_classes}
 - Trees per class: {self._n_trees_per_class}
-- Feature bit-width: {self._w_feature}
+- Sample bit-width: {self._bits_features}
 - Unique comparisons: {len(self._unique_features)}
 
 Hardware Configuration:
+- Feature weight: {self._w_feature}
 - Tree output bit-width: {self._w_tree}
 - Sum output bit-width: {self._sum_bit_length}
 - Pipeline stages: {self._pipeline}
@@ -292,6 +306,7 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
         for i, (feature_index, threshold) in enumerate(self._unique_features):
             feature_input_bits = f"{(feature_index + 1) * self._w_feature - 1}:{feature_index * self._w_feature}"
 
+            # TODO - 2025-12-02 17:57:09: Change this expression to handle VHDL and Verilog
             expr = (f"({feature_source}[{feature_input_bits}] < "
                     f"({self._w_feature}'d{int(threshold)})) ? 1'b1 : 1'b0")
 
@@ -406,8 +421,8 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             self._trees_bit_length[class_num, tree_num] = path_output_bit
 
             mod.ports[1].width = path_output_bit
-            for w in mod.wires:
-                w.width = path_output_bit
+            # for w in mod.wires:
+            #     w.width = path_output_bit
 
             tree_modules.append(mod)
 
@@ -512,7 +527,8 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             path_str = ' & '.join(reversed(path_parts)) if path_parts else "1'b1"
             path_encoded[leaf_value_int].append(path_str)
 
-        final_expr = f"{path_max}"
+        #NOTE - 2025-12-03 16:16:21: Change to get binary values in the final mux of each tree equation
+        final_expr = f"{self._int_2_bitstring(path_max, self._bitwidth(path_max))}"
         for score_idx in range(path_max):
              paths = path_encoded[score_idx]
              if not paths:
@@ -531,7 +547,8 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
              or_expression = " | ".join(path_wires)
              module.add_assignment(Assignment(wire_name_score, or_expression))
 
-             final_expr = f"({wire_name_score} ? {score_idx} : {final_expr})"
+             #NOTE - 2025-12-03 16:16:21: Change to get binary values in the final mux of each tree equation
+             final_expr = f"({wire_name_score} ? {self._int_2_bitstring(score_idx, self._bitwidth(path_max))} : {final_expr})"
 
         module.add_assignment(Assignment("o", final_expr))
 
@@ -581,7 +598,12 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
                     wire_name = f"stage{n_stage}_adder{k}"
 
                     module.add_wire(Wire(wire_name, n_bits_addition))
-                    module.add_assignment(Assignment(wire_name, f"{op1_name} + {op2_name}"))
+                    module.add_assignment(AdderAssign(wire_name, 
+                                                      ta_width=n_bits_addition,
+                                                        operand1=op1_name,
+                                                        operand2=op2_name,
+                                                        op_width1=op1_bits,
+                                                        op_width2=op2_bits))
 
                     new_operands_name.append(wire_name)
                     new_operands_bits.append(n_bits_addition)
@@ -650,12 +672,17 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             feature_thresholds = thresholds[feature_idx]
 
             if int(feature_thresholds[0]) == -1:
+                #NOTE - 2025-12-03 16:49:10: Change the input_signal width to 
+                # conform to output width when no quantization is needed
+                input_signal = f"i[{input_lsb + self._w_feature - 1}:{input_lsb}]"
                 module.add_assignment(Assignment(output_target, input_signal))
                 continue
 
-            final_expr = f"{2**self._w_feature - 1}"
+            final_expr = f"{self._int_2_bitstring(2**self._w_feature - 1, self._w_feature)}"
 
             if int(feature_thresholds[-1]) == -1:
+                #NOTE - 2025-12-04 13:22:48: If all the buckets aren't used, we assume
+                # the last threshold or more is -1, and we create a different mapping
                 step = (2**self._w_feature - 1) / (self._X_max[feature_idx] - self._X_min[feature_idx])
                 bucket = 0
                 for j, thresh in enumerate(feature_thresholds):
@@ -663,7 +690,8 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
                         break
                     thresh_str = self._int_2_bitstring(int(thresh), self._bits_features)
                     bucket_val = int(bucket) if j == 0 else int(bucket + step)
-                    final_expr = f"({input_signal} == {thresh_str}) ? {bucket_val} : ({final_expr})"
+                    bucket_str = self._int_2_bitstring(bucket_val, self._w_feature)
+                    final_expr = f"({input_signal} == {thresh_str}) ? {bucket_str} : ({final_expr})"
                     bucket += step
 
             else:
@@ -671,11 +699,12 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
                     thresh_val = int(thresh)
                     bucket_val = (len(feature_thresholds) - 1) - j
                     thresh_str = self._int_2_bitstring(thresh_val, self._bits_features)
+                    bucket_str = self._int_2_bitstring(bucket_val, self._w_feature)
 
                     if j == len(feature_thresholds) - 1:
-                        final_expr = f"({input_signal} < {thresh_str}) ? 0 : ({final_expr})"
+                        final_expr = f"({input_signal} < {thresh_str}) ? {self._int_2_bitstring(0, self._w_feature)} : ({final_expr})"
                     else:
-                        final_expr = f"({input_signal} < {thresh_str}) ? {bucket_val} : ({final_expr})"
+                        final_expr = f"({input_signal} < {thresh_str}) ? {bucket_str} : ({final_expr})"
 
             module.add_assignment(Assignment(output_target, final_expr))
 
@@ -730,13 +759,25 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
         if self._trees_bit_length is None:
             raise ValueError("Cannot calculate sum bit length before tree modules are built.")
 
+        # max_sums = []
+        # for i in range(self._n_classes):
+        #     class_trees_bits = self._trees_bit_length[i, :]
+        #     max_tree_vals = (np.power(2, class_trees_bits) - 1).sum()
+        #     max_sums.append(self._classes_bias[i] + max_tree_vals)
+
+        # self._sum_bit_length = self._bitwidth(np.max(max_sums))
+
+        #NOTE - 2025-12-04 10:38:07: Change to calculate the sum bit length based
+        # on the theoretical maximum value of each tree (sum of all n trees with
+        # maximum value for their bit-width (self._w_tree)), plus the class bias.
+        # e.g.: w_tree = 3 and 7 trees -> propagate max value of 7 (111) for each tree:
+        # 111 + 111 + 111 + 111 + 111 + 111 + 111 = 7 * 7 = 49 -> bitwidth = 6
         max_sums = []
         for i in range(self._n_classes):
-            class_trees_bits = self._trees_bit_length[i, :]
-            max_tree_vals = (np.power(2, class_trees_bits) - 1).sum()
+            max_tree_vals = (2**self._w_tree - 1) * self._n_trees_per_class
             max_sums.append(self._classes_bias[i] + max_tree_vals)
-
         self._sum_bit_length = self._bitwidth(np.max(max_sums))
+
 
     def _extract_unique_features(self):
         uf_list = []
@@ -868,6 +909,11 @@ class VerilogVisitor:
             f"    assign {mux.target} = {mux.condition} ? "
             f"{mux.true_val} : {mux.false_val};"
         )
+    
+    def visit_adderassign(self, add: AdderAssign) -> str:
+        return (
+            f"    assign {add.target} = {add.operand1} + {add.operand2};"
+        )
 
     def visit_moduleinstance(self, inst: ModuleInstance) -> str:
         # --- Parameters ---
@@ -917,24 +963,135 @@ class VHDLVisitor:
             "library ieee;\n"
             "use ieee.std_logic_1164.all;\n"
             "use ieee.numeric_std.all;\n\n"
+            "use ieee.std_logic_unsigned.all;\n"
         )
+
+    def _int_2_bitstring(self, value, bits):
+        #HACK - 2025-12-02 18:32:19: Temporary fix integer to bitstring for VHDL
+        if value < 0:
+            value = (1 << bits) + value
+        result = format(value, f'0{bits}b')
+        return f"{bits}'b{result}"
 
     def _translate_expr(self, expr: str) -> str:
         """
         Performs basic translation of Verilog expressions to VHDL.
-
-        NOTE: This does not support complex nested Verilog ternaries
-        in simple 'Assignment' nodes.
+        Now supports complex nested ternaries.
         """
-        # TODO: Add a proper parser for complex expressions.
+        # 1. Basic Operator Replacement
         expr = expr.replace("~", "not ")
         expr = expr.replace("&", " and ")
         expr = expr.replace("|", " or ")
+        expr = expr.replace("^", " xor ")
+        expr = expr.replace("==", "=")
+        expr = expr.replace("!=", "/=")
         expr = expr.replace("1'b1", "'1'")
         expr = expr.replace("1'b0", "'0'")
-        # Verilog 'd' format: 4'd10 -> 10
-        expr = re.sub(r"\d+'d(\d+)", r"\1", expr)
+        expr = expr.replace("1'd1", "'1'")
+        expr = expr.replace("1'd0", "'0'")
+        
+        # 2. Verilog 'd' format: 4'd10 -> bitsting "1010"
+        expr = re.sub(r"\d+'d(\d+)", lambda m: self._int_2_bitstring(int(m.group(1)), int(m.group(0).split("'")[0])), expr)
+
+        #2.1 Verilog 'b' format: 4'b1010 -> "1010"
+        expr = re.sub(r"\d+'b([01_]+)", lambda m: f'"{m.group(1).replace("_", "")}"', expr)
+
+
+        #3 Verilog single bit slicing: x[3:3] -> x(3)
+        expr = re.sub(r"(\w+)\[(\d+):\2\]", r"\1(\2)", expr)
+
+        # 3.1. Verilog bit slicing: x[3:0] -> x(3 downto 0)
+        expr = re.sub(r"(\w+)\[(\d+):(\d+)\]", r"\1(\2 downto \3)", expr)
+
+        # 4. Verilog indexing: x[3] -> x(3)
+        expr = re.sub(r"(\w+)\[(\d+)\]", r"\1(\2)", expr)
+
+        # 5. Handle Ternaries Recursively
+        # This replaces the old simple regex
+        if '?' in expr:
+            expr = self._unwind_ternary(expr)
+        
         return expr
+
+    def _unwind_ternary(self, expr: str) -> str:
+        """
+        Recursively parses a Verilog ternary string (cond ? true : false)
+        and converts it to VHDL (true when cond = '1' else false).
+        Handles nested parentheses.
+        """
+        expr = expr.strip()
+        
+        # Remove surrounding parentheses if they wrap the entire expression
+        # e.g., "(a ? b : c)" -> "a ? b : c"
+        while expr.startswith('(') and expr.endswith(')'):
+            # Verify these parens actually match each other and aren't just
+            # two separate groups like "(a) and (b)"
+            depth = 0
+            is_wrapped = True
+            for i, char in enumerate(expr[:-1]):
+                if char == '(': depth += 1
+                elif char == ')': depth -= 1
+                if depth == 0:
+                    is_wrapped = False
+                    break
+            
+            if is_wrapped:
+                expr = expr[1:-1].strip()
+            else:
+                break
+
+        # Base case: If no ternary operator, return the value
+        if '?' not in expr:
+            return expr
+
+        # Find the split points based on parenthesis depth
+        depth = 0
+        q_index = -1 # Index of '?'
+        c_index = -1 # Index of ':'
+
+        # 1. Find the condition (stop at first '?' at depth 0)
+        for i, char in enumerate(expr):
+            if char == '(': depth += 1
+            elif char == ')': depth -= 1
+            elif char == '?' and depth == 0:
+                q_index = i
+                break
+        
+        # If we didn't find a top-level '?', it's likely inside parens that we
+        # failed to strip, or logic error. Return as is.
+        if q_index == -1:
+            return expr
+
+        # 2. Find the matching colon for this specific '?'
+        # We start searching AFTER the '?'
+        depth = 0
+        for i in range(q_index + 1, len(expr)):
+            char = expr[i]
+            if char == '(': depth += 1
+            elif char == ')': depth -= 1
+            elif char == ':' and depth == 0:
+                c_index = i
+                break
+
+        if c_index == -1:
+            return expr # Malformed ternary
+
+        # 3. Split the string
+        cond_part = expr[:q_index].strip()
+        true_part = expr[q_index+1 : c_index].strip()
+        false_part = expr[c_index+1:].strip()
+
+        # 4. Recursively process the true and false parts
+        # (This handles the nested ternaries)
+        true_vhdl = self._unwind_ternary(true_part)
+        false_vhdl = self._unwind_ternary(false_part)
+
+        # 5. Construct VHDL string
+        # Check if the condition looks like a comparison, if so, don't add = '1'
+        if any(op in cond_part for op in ["=", ">", "<", "and", "or"]):
+             return f"{true_vhdl} when {cond_part} else\n {false_vhdl}"
+        else:
+             return f"{true_vhdl} when {cond_part} = '1' else\n {false_vhdl}"
 
     def visit_hdlmodule(self, mod: HdlModule) -> str:
         """Generates VHDL entity and architecture strings."""
@@ -993,7 +1150,8 @@ class VHDLVisitor:
 
     def visit_port(self, port: Port) -> str:
         # VHDL 'reg' is handled by process, not port declaration
-        vhdl_dir = port.direction if port.direction == 'in' else 'out'
+        print(port.direction)
+        vhdl_dir = 'in' if port.direction == 'input wire' else 'out'
         vhdl_type = self._width_str_vhdl(port.width)
         return f"{port.name} : {vhdl_dir} {vhdl_type}"
 
@@ -1003,17 +1161,41 @@ class VHDLVisitor:
         return f"    signal {wire.name} : {vhdl_type};"
 
     def visit_assignment(self, assign: Assignment) -> str:
-        # NOTE: This does not support Verilog-style ternaries.
-        # The 'equation' style builder must be updated to emit
-        # ConditionalAssign nodes for VHDL compatibility.
         expr = self._translate_expr(assign.expression)
+        assign.target = self._translate_expr(assign.target)
         return f"    {assign.target} <= {expr};"
+
+    def visit_adderassign(self, add: AdderAssign) -> str:
+
+        if add.op_width1 < add.ta_width:
+            diff = add.ta_width - add.op_width1
+            # Shift right by adding zeros at MSB
+            if diff == 1:
+                op1 = f"'0' & {self._translate_expr(add.operand1)}"
+            else:
+                op1 = f'"{'0'* diff}"' + " & " + f"{self._translate_expr(add.operand1)}"
+        else:
+            op1 = add.operand1
+        
+        if add.op_width2 < add.ta_width:
+            diff = add.ta_width - add.op_width2
+            # Shift right by adding zeros at MSB
+            if diff == 1:
+                op2 = f"'0' & {self._translate_expr(add.operand2)}"
+            else:
+                op2 = f'"{'0'* diff}"' + " & " + f"{self._translate_expr(add.operand2)}"
+        else:
+            op2 = add.operand2
+
+            
+        return f"    {add.target} <= ({op1}) + ({op2});"
 
     def visit_conditionalassign(self, mux: ConditionalAssign) -> str:
         # VHDL conditional signal assignment
         cond = self._translate_expr(mux.condition)
         true_val = self._translate_expr(mux.true_val)
         false_val = self._translate_expr(mux.false_val)
+        mux.target = self._translate_expr(mux.target)
 
         return (
             f"    {mux.target} <= {true_val} when {cond} = '1' else\n"
@@ -1024,18 +1206,18 @@ class VHDLVisitor:
         # --- Parameters (Generic Map) ---
         params_str = ""
         if inst.param_map:
-            params = [f"{k} => {v}" for k, v in inst.param_map.items()]
+            params = [f"{k} => {self._translate_expr(v)}" for k, v in inst.param_map.items()]
             params_str = (
                 f"generic map (\n"
-                f"        {', '.join(params)}\n"
+                f"        {',\n        '.join(params)}\n"
                 f"    ) "
             )
 
         # --- Ports (Port Map) ---
-        ports = [f"{k} => {v}" for k, v in inst.port_map.items()]
+        ports = [f"{k} => {self._translate_expr(v)}" for k, v in inst.port_map.items()]
         ports_str = (
             f"port map (\n"
-            f"        {', '.join(ports)}\n"
+            f"        {',\n        '.join(ports)}\n"
             f"    )"
         )
 
