@@ -52,6 +52,13 @@ class HdlModule(HdlNode):
     def add_parameter(self, param): self.parameters.append(param)
     def add_header(self, header): self.headers.append(header)
 
+class ComparatorModule(HdlModule):
+    def __init__(self, name):
+        super().__init__(name)
+        
+            
+
+
 class Port(HdlNode):
     def __init__(self, name, direction, width, is_reg=False):
         self.name = name
@@ -79,9 +86,9 @@ class ConditionalAssign(Assignment):
         self.true_val = true_val
         self.false_val = false_val
 
-class AdderAssign(Assignment):
+class ArithmeticAssign(Assignment):
     """Represents an addition: target = op1 + op2"""
-    def __init__(self, target, operand1, operand2, ta_width=None, op_width1=None, op_width2=None):
+    def __init__(self, target, operand1, operand2, ta_width=None, op_width1=None, op_width2=None, operation='+'):
         self.target = target
         self.operand1 = operand1
         self.operand2 = operand2
@@ -91,6 +98,8 @@ class AdderAssign(Assignment):
         self.ta_width = ta_width
         self.op_width1 = op_width1
         self.op_width2 = op_width2
+        self.operation = operation
+
 
 class ModuleInstance(HdlNode):
     def __init__(self, name, module_type, port_map, param_map=None):
@@ -98,6 +107,18 @@ class ModuleInstance(HdlNode):
         self.module_type = module_type # "tree_0"
         self.port_map = port_map     # {"i": "comparators_wire", "o": "tree_0_out"}
         self.param_map = param_map   # {"DataWidth": 16}
+
+class ComparatorInstance(ModuleInstance):
+    """Represents a comparison: target = out1 if (comparator < threshold) else out2
+    or a call to an external comparator module."""
+    def __init__(self, name, port_map, target, comparator, threshold, param_map=None):
+        super().__init__(name=name, 
+                         module_type="comparator_operator", 
+                         port_map=port_map, 
+                         param_map=param_map)
+        self.target = target
+        self.comparator = comparator
+        self.threshold = threshold
 
 class RawCode(HdlNode):
     def __init__(self, verilog_code, vhdl_code):
@@ -207,6 +228,11 @@ class TreeLUTBuilder:
         if any(p > 0 for p in self._pipeline):
             reg_module = self._build_myreg_module()
             modules[reg_module.name] = reg_module
+        
+        comparator_modules = self._build_comparator_modules()
+        comparator_operator = self._build_one_comparator_module()
+        modules[comparator_operator.name] = comparator_operator
+        modules[comparator_modules.name] = comparator_modules
 
         if self._argmax:
             argmax_module = self._build_argmax_module()
@@ -286,7 +312,7 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             out_width = self._n_classes * self._sum_bit_length
             top_module.add_port(Port("o", "out", out_width))
 
-        self._build_comparator_logic(top_module)
+        self._build_comparators_instantiations(top_module)
         self._build_tree_instantiations(top_module)
         self._build_adder_instantiations(top_module)
 
@@ -401,6 +427,16 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             }
         ))
 
+    def _build_comparators_instantiations(self, top_module):
+        top_module.add_wire(Wire("binary_features", len(self._unique_features)))
+        top_module.add_instance(ModuleInstance(
+            name="comparators_inst",
+            module_type="comparator",
+            port_map={
+                "i": "i",
+                "o": "binary_features"
+            }
+        ))
     # ==============================================================
     # Sub-Module Construction Methods
     # ==============================================================
@@ -602,7 +638,7 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
                     wire_name = f"stage{n_stage}_adder{k}"
 
                     module.add_wire(Wire(wire_name, n_bits_addition))
-                    module.add_assignment(AdderAssign(wire_name, 
+                    module.add_assignment(ArithmeticAssign(wire_name, 
                                                       ta_width=n_bits_addition,
                                                         operand1=op1_name,
                                                         operand2=op2_name,
@@ -746,6 +782,75 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
         )
 
         module.add_raw_code(RawCode(verilog_code, vhdl_code))
+        return module
+
+    def _build_one_comparator_module(self):        
+        module = ComparatorModule("comparator_operator")
+
+        module.add_port(Port("a", "in", self._w_feature))
+        module.add_port(Port("b", "in", self._w_feature))
+        module.add_port(Port("o", "out", 1))
+
+        module.add_wire(Wire("r_diff", self._w_feature + 1))
+        module.add_assignment(ArithmeticAssign(
+            target="r_diff",
+            ta_width=self._w_feature + 1,
+            operand1="a",
+            operand2="b",
+            op_width1=self._w_feature,
+            op_width2=self._w_feature,
+            operation="-"))
+        
+        module.add_assignment(ConditionalAssign(
+            target="o",
+            condition=f"((r_diff != 0) & (r_diff[{self._w_feature}] == '0'))",
+            true_val="1'b1",
+            false_val="1'b0"
+        ))
+
+        return module
+        
+    def _build_comparator_modules(self):
+        
+        module = HdlModule("comparator")
+
+        n_comparators = len(self._unique_features)
+        module.add_port(Port("i", "in", self._n_features * self._w_feature))
+        module.add_port(Port("o", "out", n_comparators))
+
+        for i, (feature_index, threshold) in enumerate(self._unique_features):
+            feature_input_bits = f"{(feature_index + 1) * self._w_feature - 1}:{feature_index * self._w_feature}"
+
+            expr = (f"({{i[{feature_input_bits}]}} < "
+                    f"({self._w_feature}'d{int(threshold)})) ? 1'b1 : 1'b0")
+
+            # TODO - 2025-12-05 10:00:55: Change Assignment to ComparatorInstance
+            module.add_assignment(ComparatorInstance(
+                name=f"comparator_{i}",
+                param_map={},
+                port_map={
+                    "a": f"i[{feature_input_bits}]",
+                    "b": f"{self._w_feature}'d{int(threshold)}",
+                    "o": f"o[{i}]"
+                },
+                target=f"o[{i}]",
+                comparator=f"({{i[{feature_input_bits}]}})",
+                threshold=f"({self._w_feature}'d{int(threshold)})"
+            ))
+        
+        if self._pipeline[0] != 0:
+            module.add_wire(Wire("binary_features_reg", n_comparators))
+            module.add_instance(ModuleInstance(
+                name="feature_reg",
+                module_type="myreg",
+                param_map={"DataWidth": n_comparators},
+                port_map={
+                    "clk": "clk",
+                    "data_in": "binary_features",
+                    "data_out": "binary_features_reg"
+                }
+            ))
+
         return module
 
     # ==============================================================
@@ -925,9 +1030,14 @@ class VerilogVisitor:
             f"{mux.true_val} : {mux.false_val};"
         )
     
-    def visit_adderassign(self, add: AdderAssign) -> str:
+    def visit_arithmeticassign(self, add: ArithmeticAssign) -> str:
         return (
             f"    assign {add.target} = {add.operand1} + {add.operand2};"
+        )
+
+    def visit_comparatorinstance(self, comp: ComparatorInstance) -> str:
+        return (
+            f"    assign {comp.target} = ({comp.comparator} < {comp.threshold}) ? 1'b1 : 1'b0;"
         )
 
     def visit_moduleinstance(self, inst: ModuleInstance) -> str:
@@ -1161,6 +1271,12 @@ class VHDLVisitor:
 
         return f"{header}\n\n" + self._preamble() + entity_str + arch_str
 
+    def visit_comparatormodule(self, comp: ComparatorModule) -> str:
+        
+        """Generates VHDL for ComparatorModule."""
+        # Reuse the HdlModule visitor
+        return self.visit_hdlmodule(comp)
+
     def visit_parameter(self, param: Parameter) -> str:
         return f"{param.name} : integer := {param.value}"
 
@@ -1180,7 +1296,7 @@ class VHDLVisitor:
         assign.target = self._translate_expr(assign.target)
         return f"    {assign.target} <= {expr};"
 
-    def visit_adderassign(self, add: AdderAssign) -> str:
+    def visit_arithmeticassign(self, add: ArithmeticAssign) -> str:
 
         if add.op_width1 < add.ta_width:
             diff = add.ta_width - add.op_width1
@@ -1216,6 +1332,10 @@ class VHDLVisitor:
             f"    {mux.target} <= {true_val} when {cond} = '1' else\n"
             f"                  {false_val};"
         )
+
+    def visit_comparatorinstance(self, inst: ComparatorInstance) -> str:
+        return self.visit_moduleinstance(inst)
+
 
     def visit_moduleinstance(self, inst: ModuleInstance) -> str:
         # --- Parameters (Generic Map) ---
