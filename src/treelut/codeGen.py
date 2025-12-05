@@ -421,8 +421,12 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             self._trees_bit_length[class_num, tree_num] = path_output_bit
 
             mod.ports[1].width = path_output_bit
-            # for w in mod.wires:
-            #     w.width = path_output_bit
+            if self._style == 'mux':
+                #NOTE - 2025-12-05 08:33:57: Mux propagates output not the 
+                # expressions result
+                for w in mod.wires:
+                    w.width = path_output_bit
+
 
             tree_modules.append(mod)
 
@@ -463,14 +467,14 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             comparator = f"i[{unique_feature_idx}]"
 
             if yes_node['type'] == 'leaf':
-                yes_expr = f"{int(yes_node['value'])}"
+                yes_expr = f"{self._int_2_bitstring(int(yes_node['value']), self._w_tree)}"
                 path_max = max(path_max, int(yes_node['value']))
             else:
                 yes_expr = f"new_{yes_node_id_str}"
                 queue.append((yes_node_id_str, ''))
 
             if no_node['type'] == 'leaf':
-                no_expr = f"{int(no_node['value'])}"
+                no_expr = f"{self._int_2_bitstring(int(no_node['value']), self._w_tree)}"
                 path_max = max(path_max, int(no_node['value']))
             else:
                 no_expr = f"new_{no_node_id_str}"
@@ -658,9 +662,10 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
         module.add_port(Port("i", "in", self._n_features * self._bits_features))
         module.add_port(Port("o", "out", self._n_features * self._w_feature))
 
-        thresholds = self._thresholds
+        max_out_val = 2**self._w_feature - 1
 
         for feature_idx in range(self._n_features):
+            # Port slicing definitions
             input_msb = (feature_idx + 1) * self._bits_features - 1
             input_lsb = feature_idx * self._bits_features
             output_msb = (feature_idx + 1) * self._w_feature - 1
@@ -669,47 +674,55 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             input_signal = f"i[{input_msb}:{input_lsb}]"
             output_target = f"o[{output_msb}:{output_lsb}]"
 
-            feature_thresholds = thresholds[feature_idx]
-
-            if int(feature_thresholds[0]) == -1:
-                #NOTE - 2025-12-03 16:49:10: Change the input_signal width to 
-                # conform to output width when no quantization is needed
-                input_signal = f"i[{input_lsb + self._w_feature - 1}:{input_lsb}]"
-                module.add_assignment(Assignment(output_target, input_signal))
+            x_min = self._X_min[feature_idx]
+            x_max = self._X_max[feature_idx]
+            diff = x_max - x_min
+            
+            # --- Case 1: Constant (Min == Max) ---
+            if diff == 0:
+                zero_str = self._int_2_bitstring(0, self._w_feature)
+                module.add_assignment(Assignment(output_target, zero_str))
                 continue
 
-            final_expr = f"{self._int_2_bitstring(2**self._w_feature - 1, self._w_feature)}"
+            # Initialize with default value (mapped to Max)
+            default_out_val = max_out_val
+            final_expr = self._int_2_bitstring(default_out_val, self._w_feature)
 
-            if int(feature_thresholds[-1]) == -1:
-                #NOTE - 2025-12-04 13:22:48: If all the buckets aren't used, we assume
-                # the last threshold or more is -1, and we create a different mapping
-                step = (2**self._w_feature - 1) / (self._X_max[feature_idx] - self._X_min[feature_idx])
-                bucket = 0
-                for j, thresh in enumerate(feature_thresholds):
-                    if thresh == -1:
-                        break
-                    thresh_str = self._int_2_bitstring(int(thresh), self._bits_features)
-                    bucket_val = int(bucket) if j == 0 else int(bucket + step)
-                    bucket_str = self._int_2_bitstring(bucket_val, self._w_feature)
-                    final_expr = f"({input_signal} == {thresh_str}) ? {bucket_str} : ({final_expr})"
-                    bucket += step
+            # --- Case 2: Gaps (Range < 7) ---
+            if diff < max_out_val:
+                # Direct mapping loop: Iterate backwards to build priority logic
+                start_check = int(x_max) - 1
+                end_check = int(x_min) - 1 
+                
+                for x_val in range(start_check, end_check, -1):
+                    # Calculate exact output integer
+                    raw_y = (x_val - x_min) / diff * max_out_val
+                    y_int = int(round(raw_y))
+                    
+                    thresh_str = self._int_2_bitstring(x_val, self._bits_features)
+                    out_str = self._int_2_bitstring(y_int, self._w_feature)
+                    
+                    # Wrap: (i <= x) ? y : (previous)
+                    final_expr = f"({input_signal} <= {thresh_str}) ? {out_str} : ({final_expr})"
 
+            # --- Case 3: Compression (Range >= 7) ---
             else:
-                for j, thresh in enumerate(reversed(feature_thresholds)):
-                    thresh_val = int(thresh)
-                    bucket_val = (len(feature_thresholds) - 1) - j
-                    thresh_str = self._int_2_bitstring(thresh_val, self._bits_features)
-                    bucket_str = self._int_2_bitstring(bucket_val, self._w_feature)
-
-                    if j == len(feature_thresholds) - 1:
-                        final_expr = f"({input_signal} < {thresh_str}) ? {self._int_2_bitstring(0, self._w_feature)} : ({final_expr})"
-                    else:
-                        final_expr = f"({input_signal} < {thresh_str}) ? {bucket_str} : ({final_expr})"
+                feature_thresholds = self._thresholds[feature_idx]
+                
+                # Iterate buckets backwards (6 down to 0)
+                for k in range(max_out_val - 1, -1, -1):
+                    cut_val = feature_thresholds[k]
+                    bucket_out_val = k
+                    
+                    thresh_str = self._int_2_bitstring(int(cut_val), self._bits_features)
+                    out_str = self._int_2_bitstring(bucket_out_val, self._w_feature)
+                    
+                    final_expr = f"({input_signal} <= {thresh_str}) ? {out_str} : ({final_expr})"
 
             module.add_assignment(Assignment(output_target, final_expr))
 
         return module
-
+    
     def _build_myreg_module(self):
         module = HdlModule("myreg")
         module.add_parameter(Parameter("DataWidth", 16))
@@ -778,7 +791,6 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
             max_sums.append(self._classes_bias[i] + max_tree_vals)
         self._sum_bit_length = self._bitwidth(np.max(max_sums))
 
-
     def _extract_unique_features(self):
         uf_list = []
         for tree in self._treelut_model_struct:
@@ -800,29 +812,32 @@ version of the original TreeLUT project (https://doi.org/10.48550/arXiv.2501.015
 
     def _get_thresholds(self):
         if self._X_min is None or self._X_max is None:
-            raise ValueError("min_vals and max_vals must be provided for quantization.")
+            raise ValueError("X_min and X_max are required.")
 
-        thresholds = np.zeros((self._n_features, 2**self._w_feature - 1))
-        for feature_idx in range(self._n_features):
-            min_val = self._X_min[feature_idx]
-            max_val = self._X_max[feature_idx]
+        n_cuts = 2**self._w_feature - 1
+        thresholds = np.full((self._n_features, n_cuts), -1, dtype=int)
+        max_out_val = n_cuts
 
-            if min_val == max_val:
-                 thresholds[feature_idx, :] = -1
-                 continue
+        for i in range(self._n_features):
+            min_v = self._X_min[i]
+            max_v = self._X_max[i]
+            diff = max_v - min_v
 
-            if max_val - min_val < (2**self._w_feature - 1):
-                thresh_val = min_val + 1
-                for j in range(max_val - min_val):
-                     thresholds[feature_idx, j] = thresh_val
-                     thresh_val += 1
-                thresholds[feature_idx, (max_val - min_val):] = -1
-            else:
-                step = (max_val - min_val) / (2**self._w_feature)
-                current_thresh = min_val + step
-                for j in range(2**self._w_feature - 1):
-                    thresholds[feature_idx, j] = int(current_thresh)
-                    current_thresh += step
+            # Skip Constant or Gap cases (handled directly in build module)
+            if diff < max_out_val:
+                continue
+
+            # Compression Case: Calculate integer upper bounds for each bucket
+            # Transition occurs mathematically at k + 0.5
+            k_values = np.arange(n_cuts)
+            boundary_values = k_values + 0.5
+            
+            # Map back to original scale
+            real_boundaries = min_v + (boundary_values / max_out_val) * diff
+            
+            # Floor to get the integer inclusive upper bound
+            thresholds[i, :] = np.floor(real_boundaries).astype(int)
+
         return thresholds
 
     def _int_2_bitstring(self, value, bits):
@@ -962,8 +977,8 @@ class VHDLVisitor:
         return (
             "library ieee;\n"
             "use ieee.std_logic_1164.all;\n"
-            "use ieee.numeric_std.all;\n\n"
-            "use ieee.std_logic_unsigned.all;\n"
+            "use ieee.numeric_std.all;\n"
+            "use ieee.std_logic_unsigned.all;\n\n"
         )
 
     def _int_2_bitstring(self, value, bits):
@@ -995,7 +1010,7 @@ class VHDLVisitor:
 
         #2.1 Verilog 'b' format: 4'b1010 -> "1010"
         expr = re.sub(r"\d+'b([01_]+)", lambda m: f'"{m.group(1).replace("_", "")}"', expr)
-
+        
 
         #3 Verilog single bit slicing: x[3:3] -> x(3)
         expr = re.sub(r"(\w+)\[(\d+):\2\]", r"\1(\2)", expr)
@@ -1128,6 +1143,7 @@ class VHDLVisitor:
         )
 
         # --- 2. Architecture ---
+        header = "\n".join([h.accept(self) for h in mod.headers])
         wires = "\n".join([w.accept(self) for w in mod.wires])
         assigns = "\n".join([a.accept(self) for a in mod.assignments])
         instances = "\n".join([i.accept(self) for i in mod.instances])
@@ -1143,14 +1159,13 @@ class VHDLVisitor:
             "end architecture rtl;\n"
         )
 
-        return self._preamble() + entity_str + arch_str
+        return f"{header}\n\n" + self._preamble() + entity_str + arch_str
 
     def visit_parameter(self, param: Parameter) -> str:
         return f"{param.name} : integer := {param.value}"
 
     def visit_port(self, port: Port) -> str:
         # VHDL 'reg' is handled by process, not port declaration
-        print(port.direction)
         vhdl_dir = 'in' if port.direction == 'input wire' else 'out'
         vhdl_type = self._width_str_vhdl(port.width)
         return f"{port.name} : {vhdl_dir} {vhdl_type}"
@@ -1229,3 +1244,8 @@ class VHDLVisitor:
     def visit_rawcode(self, raw: RawCode) -> str:
         # Indent the raw VHDL code
         return "\n".join([f"    {line}" for line in raw.vhdl_code.split('\n')])
+
+    def visit_header(self, header: Header) -> str:
+        # For each line in the comment, prepend '-- '
+        vhdl_comment = "\n".join([f"-- {line}" for line in header.comment.split('\n')])
+        return vhdl_comment
